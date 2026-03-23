@@ -7,6 +7,9 @@ use crate::model::FastqRecord;
 pub struct KmerSpectrum {
     k: usize,
     counts: HashMap<u64, u32>,
+    /// When present, low-count k-mers are stored only in the Bloom filter
+    /// while trusted k-mers (≥ threshold) retain exact counts in `counts`.
+    bloom: Option<CountingBloomFilter>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -67,6 +70,7 @@ impl KmerSpectrumBuilder {
         KmerSpectrum {
             k: self.k,
             counts: self.counts,
+            bloom: None,
         }
     }
 }
@@ -123,20 +127,33 @@ impl KmerSpectrum {
             }
         }
 
-        Self { k, counts }
+        Self { k, counts, bloom: None }
     }
 
     pub fn k(&self) -> usize {
         self.k
     }
 
+    pub fn unique_kmers(&self) -> usize {
+        self.counts.len()
+    }
+
     pub fn count_bytes(&self, bytes: &[u8]) -> u32 {
         if bytes.len() != self.k {
             return 0;
         }
-        encode_canonical(bytes)
-            .and_then(|encoded| self.counts.get(&encoded).copied())
-            .unwrap_or(0)
+        let Some(encoded) = encode_canonical(bytes) else {
+            return 0;
+        };
+        // Exact lookup in the (trusted-only or full) HashMap
+        if let Some(&exact) = self.counts.get(&encoded) {
+            return exact;
+        }
+        // Fall back to Bloom filter approximate count when compressed
+        if let Some(ref bloom) = self.bloom {
+            return u32::from(bloom.count(encoded));
+        }
+        0
     }
 
     pub fn support_for_position(&self, sequence: &[u8], position: usize) -> SupportStats {
@@ -174,6 +191,34 @@ impl KmerSpectrum {
             .collect();
         entries.sort_unstable_by_key(|(key, _)| *key);
         entries
+    }
+
+    /// Compress the spectrum in-place: insert all k-mers into a counting
+    /// Bloom filter, then keep only trusted k-mers (count ≥ `trusted_floor`)
+    /// in the exact HashMap.  Subsequent `count_bytes` calls use the hybrid
+    /// lookup (exact for trusted, Bloom for the rest).
+    ///
+    /// Returns `(bloom_bytes, evicted_kmers)` for logging.
+    pub fn compress_to_bloom(&mut self, trusted_floor: u32) -> (usize, usize) {
+        let item_count = self.counts.len();
+        let mut bloom = CountingBloomFilter::new(item_count, 0.01);
+        for (&key, &count) in &self.counts {
+            for _ in 0..count.min(255) {
+                bloom.insert(key);
+            }
+        }
+        let bloom_bytes = bloom.memory_bytes();
+        let total = self.counts.len();
+        self.counts.retain(|_, count| *count >= trusted_floor);
+        self.counts.shrink_to_fit();
+        let evicted = total - self.counts.len();
+        self.bloom = Some(bloom);
+        (bloom_bytes, evicted)
+    }
+
+    /// Whether Bloom compression is active.
+    pub fn is_compressed(&self) -> bool {
+        self.bloom.is_some()
     }
 
     /// Convert into a `BloomKmerSpectrum`.

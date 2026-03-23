@@ -381,7 +381,7 @@ fn prepare_process_session(
     let min_bq = context.execution_plan.trim_min_quality.saturating_sub(2);
     #[allow(unused_assignments)]
     let mut full_scan_total_reads = 0usize;
-    let spectrum = {
+    let mut spectrum = {
         let mut builder = KmerSpectrumBuilder::new(kmer_k, min_bq);
         if let Some(input2) = input2 {
             read_paired_batches(input1, input2, 50_000, |batch| {
@@ -430,6 +430,16 @@ fn prepare_process_session(
     let scheduler = HeterogeneousScheduler::new(options.backend_preference);
     let resolution = scheduler.resolve(&context.execution_plan);
     let backend_instance = scheduler.instantiate(&resolution, &context.execution_plan, &spectrum);
+    // Compress spectrum via Bloom filter: keep exact counts only for
+    // trusted k-mers, approximate counts for the long tail.
+    let (bloom_bytes, evicted) =
+        spectrum.compress_to_bloom(context.execution_plan.trusted_kmer_min_count);
+    context.execution_plan.notes.push(format!(
+        "Bloom compression: {:.1} MB filter, {} trusted (exact) + {} evicted (approximate)",
+        bloom_bytes as f64 / (1024.0 * 1024.0),
+        spectrum.unique_kmers(),
+        evicted,
+    ));
     Ok(PreparedProcessSession {
         paired_end,
         context,
