@@ -180,6 +180,71 @@ pub fn sample_records(path: &Path, limit: usize) -> Result<Vec<FastqRecord>> {
     Ok(records)
 }
 
+/// Try to discover the paired mate file for a given FASTQ path.
+///
+/// Recognises common naming conventions: `_R1`/`_R2`, `_1`/`_2`, `.1`/`.2`,
+/// `-1`/`-2`, and their uppercase variants, optionally followed by `_001`.
+/// Returns `Some(mate_path)` if exactly one matching file exists on disk.
+pub fn discover_mate_file(path: &Path) -> Option<PathBuf> {
+    let _stem = path.file_stem()?.to_str()?;
+
+    // Strip compression extensions to get the "inner" stem + extension
+    // e.g. "sample_R1_001.fastq.gz" → stem="sample_R1_001.fastq", ext="gz"
+    // We need to handle .fastq.gz, .fq.gz etc.
+    let full_name = path.file_name()?.to_str()?;
+
+    // Build the name without the directory
+    let (base_name, extensions) = split_name_and_extensions(full_name);
+
+    // Mate suffix patterns: (suffix_r1, suffix_r2)
+    const MATE_PATTERNS: &[(&str, &str)] = &[
+        ("_R1_001", "_R2_001"),
+        ("_R1", "_R2"),
+        ("_r1_001", "_r2_001"),
+        ("_r1", "_r2"),
+        (".R1", ".R2"),
+        (".r1", ".r2"),
+        ("-R1", "-R2"),
+        ("-r1", "-r2"),
+        ("_1", "_2"),
+        (".1", ".2"),
+        ("-1", "-2"),
+    ];
+
+    let parent = path.parent()?;
+
+    for &(r1_suffix, r2_suffix) in MATE_PATTERNS {
+        if base_name.ends_with(r1_suffix) {
+            let prefix = &base_name[..base_name.len() - r1_suffix.len()];
+            let mate_name = format!("{}{}{}", prefix, r2_suffix, extensions);
+            let mate_path = parent.join(&mate_name);
+            if mate_path.exists() && mate_path != path {
+                return Some(mate_path);
+            }
+        }
+    }
+
+    None
+}
+
+/// Split a filename into (base, extensions) where extensions includes
+/// everything from the first `.fastq` or `.fq` onward (including `.gz`).
+/// e.g. "sample_R1.fastq.gz" → ("sample_R1", ".fastq.gz")
+fn split_name_and_extensions(name: &str) -> (&str, &str) {
+    // Find the start of the "extension block"
+    for pat in &[".fastq.gz", ".fq.gz", ".fastq", ".fq"] {
+        if let Some(idx) = name.to_ascii_lowercase().rfind(pat) {
+            return (&name[..idx], &name[idx..]);
+        }
+    }
+    // Fallback: split at last dot
+    if let Some(idx) = name.rfind('.') {
+        (&name[..idx], &name[idx..])
+    } else {
+        (name, "")
+    }
+}
+
 pub fn sample_paired_records(path1: &Path, path2: &Path, limit: usize) -> Result<Vec<ReadPair>> {
     let mut reader1 = open_fastq(path1)?;
     let mut reader2 = open_fastq(path2)?;

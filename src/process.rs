@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::backend::{BackendResolution, HeterogeneousScheduler};
 use crate::fastq::{
-    read_batches, read_batches_with_read_ahead, read_paired_batches,
+    discover_mate_file, read_batches, read_batches_with_read_ahead, read_paired_batches,
     read_paired_batches_with_read_ahead, sample_paired_records,
     sample_records, write_processed_record_pairs, write_processed_records,
 };
@@ -74,6 +74,13 @@ pub fn inspect_inputs_with_overrides(
     forced_platform: Option<Platform>,
     forced_experiment: Option<ExperimentType>,
 ) -> Result<InspectReport> {
+    // Check for auto-discovered mate to report in notes
+    let discovered_mate = if input2.is_none() {
+        discover_mate_file(input1)
+    } else {
+        None
+    };
+
     let context = prepare_run_context(
         input1,
         input2,
@@ -83,18 +90,24 @@ pub fn inspect_inputs_with_overrides(
         forced_experiment,
     )?;
     let mut notes = context.resolution.notes.clone();
-    if let Some(input2) = input2 {
+    if let Some(ref input2_path) = input2 {
         notes.push(format!(
             "Paired-end inspection uses synchronized mates {} and {}",
             input1.display(),
-            input2.display()
+            input2_path.display()
+        ));
+    } else if let Some(ref mate_path) = discovered_mate {
+        notes.push(format!(
+            "Auto-discovered paired mate {} for improved detection",
+            mate_path.display()
         ));
     } else {
         notes.push(format!("Single-end inspection uses {}", input1.display()));
     }
 
+    let paired = input2.is_some() || discovered_mate.is_some();
     Ok(InspectReport {
-        paired_end: input2.is_some(),
+        paired_end: paired,
         auto_profile: context.auto_profile,
         execution_plan: context.execution_plan,
         accelerator_scaffold: context.resolution.accelerator_scaffold,
@@ -639,20 +652,34 @@ fn prepare_run_context(
     forced_platform: Option<Platform>,
     forced_experiment: Option<ExperimentType>,
 ) -> Result<RunContext> {
-    let (profile_records, sample_records) = if let Some(input2) = input2 {
+    // Auto-discover R2 mate when not explicitly provided.
+    let discovered_mate = if input2.is_none() {
+        discover_mate_file(input1)
+    } else {
+        None
+    };
+    let auto_discovered = discovered_mate.is_some();
+    let effective_input2 = input2
+        .map(Path::to_path_buf)
+        .or(discovered_mate);
+
+    // When R2 is explicitly provided via --input2, use synchronized paired
+    // sampling (existing behavior). When R2 is auto-discovered, profile R1
+    // at full sample size to preserve detection accuracy, then check R2
+    // separately for poly-tail boost.
+    let (profile_records, sample_records) = if let Some(ref input2_path) = input2.map(Path::to_path_buf) {
         let sample_pairs = sample_size.max(2).div_ceil(2);
-        let pairs = sample_paired_records(input1, input2, sample_pairs)?;
+        let pairs = sample_paired_records(input1, input2_path, sample_pairs)?;
         if pairs.is_empty() {
             bail!(
                 "input FASTQ contains no paired reads: {} and {}",
                 input1.display(),
-                input2.display()
+                input2_path.display()
             );
         }
-        (
-            pairs.iter().map(|pair| pair.left.clone()).collect(),
-            flatten_pairs(&pairs),
-        )
+        let r1_records: Vec<_> = pairs.iter().map(|pair| pair.left.clone()).collect();
+        let all_records = flatten_pairs(&pairs);
+        (r1_records, all_records)
     } else {
         let records = sample_records(input1, sample_size.max(1))?;
         if records.is_empty() {
@@ -662,6 +689,38 @@ fn prepare_run_context(
     };
 
     let mut auto_profile = infer_auto_profile(&profile_records);
+
+    // When R2 is available (auto-discovered or explicit) and R1 profiling
+    // did not detect RNA-seq, check R2 for poly-A/T tails. R2 of poly-A
+    // selected libraries often starts with a poly-T run that R1 lacks.
+    if auto_profile.experiment == ExperimentType::Wgs {
+        let r2_path = if auto_discovered {
+            effective_input2.as_deref()
+        } else {
+            input2
+        };
+        if let Some(r2) = r2_path {
+            let r2_records = crate::fastq::sample_records(r2, sample_size / 2)?;
+            if !r2_records.is_empty() {
+                let r2_poly = count_poly_tail_fraction(&r2_records);
+                if r2_poly > auto_profile.poly_tail_rate {
+                    // Re-run profiling with combined R1+R2 for RNA-seq scoring.
+                    // Only override experiment — keep R1's structural metrics.
+                    let mut combined = profile_records.clone();
+                    combined.extend(r2_records);
+                    let combined_profile = infer_auto_profile(&combined);
+                    if combined_profile.experiment == ExperimentType::RnaSeq {
+                        auto_profile.experiment = ExperimentType::RnaSeq;
+                        auto_profile.notes.push(format!(
+                            "R2 mate poly-tail rate {:.1}% boosted RNA-seq detection (R1 was {:.1}%)",
+                            r2_poly * 100.0,
+                            auto_profile.poly_tail_rate * 100.0,
+                        ));
+                    }
+                }
+            }
+        }
+    }
 
     // Apply manual overrides if provided
     if let Some(platform) = forced_platform {
@@ -681,6 +740,21 @@ fn prepare_run_context(
         execution_plan,
         resolution,
     })
+}
+
+/// Count the fraction of reads with a poly-A or poly-T tail.
+fn count_poly_tail_fraction(records: &[FastqRecord]) -> f64 {
+    if records.is_empty() {
+        return 0.0;
+    }
+    let hits = records
+        .iter()
+        .filter(|r| {
+            crate::profile::has_homopolymer_tail(&r.sequence, b'A')
+                || crate::profile::has_homopolymer_tail(&r.sequence, b'T')
+        })
+        .count();
+    hits as f64 / records.len() as f64
 }
 
 fn process_single(

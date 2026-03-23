@@ -35,6 +35,7 @@ pub fn infer_auto_profile(records: &[FastqRecord]) -> AutoProfile {
             },
             adapter_candidates: Vec::new(),
             barcode_hint: None,
+            poly_tail_rate: 0.0,
             notes: vec!["No reads available for profiling".to_string()],
         };
     }
@@ -180,6 +181,7 @@ pub fn infer_auto_profile(records: &[FastqRecord]) -> AutoProfile {
         quality_profile,
         adapter_candidates,
         barcode_hint,
+        poly_tail_rate,
         notes,
     }
 }
@@ -334,16 +336,19 @@ fn detect_experiment(
 
 /// Compute a composite RNA-Seq evidence score in [0, 1].
 ///
-/// Five independent signals each contribute a weighted partial score:
-///   1. Poly-A/T tail rate   — weight 0.30  (strong mRNA indicator)
-///   2. Leading-cycle bias   — weight 0.20  (random-hexamer priming artifact)
-///   3. Sequence duplication — weight 0.20  (high-expression transcript copies)
-///   4. GC-content bias      — weight 0.15  (priming / transcript GC skew)
-///   5. Low k-mer diversity  — weight 0.15  (transcriptome << genome complexity)
+/// Two independent pathways are evaluated and the **maximum** is returned:
 ///
-/// Each signal is converted to a 0–1 scale via a sigmoid-like ramp so that
-/// partial evidence (e.g. poly-tail at 10% instead of the old hard 18%)
-/// still contributes proportionally.
+///   - **Classic**: poly-tail and duplication are primary signals (traditional
+///     RNA-seq indicators). Secondary signals (bias, GC, k-mer) are scaled
+///     proportionally to primary strength.
+///
+///   - **Bias-dominant**: when leading-cycle bias is strong (>8%) with
+///     corroborating GC bias and transcriptomic-range k-mer diversity
+///     (0.40–0.65), the bias constellation is treated as the primary signal.
+///     This captures RNA-seq datasets where poly-A is on R2 and duplication
+///     is moderate-to-low (e.g., ribo-depleted or small-organism RNA-seq).
+///     The lower k-mer bound (≥0.40) prevents amplicon data (extremely low
+///     diversity) from triggering this pathway.
 fn rna_seq_evidence_score(
     poly_tail_rate: f64,
     leading_cycle_bias: f64,
@@ -351,39 +356,37 @@ fn rna_seq_evidence_score(
     gc_content_bias: f64,
     kmer_diversity: f64,
 ) -> f64 {
-    // Signal 1: poly-A/T tail rate — ramp from 0.05 (floor) to 0.20 (saturated)
     let poly_score = smooth_ramp(poly_tail_rate, 0.05, 0.20);
-
-    // Signal 2: leading-cycle composition bias — ramp from 0.03 to 0.10
     let bias_score = smooth_ramp(leading_cycle_bias, 0.03, 0.10);
-
-    // Signal 3: sequence duplication rate — ramp from 0.08 to 0.25
     let dup_score = smooth_ramp(sequence_duplication_rate, 0.08, 0.25);
-
-    // Signal 4: GC-content bias in first 10 cycles — ramp from 0.02 to 0.08
     let gc_score = smooth_ramp(gc_content_bias, 0.02, 0.08);
-
-    // Signal 5: low k-mer diversity (inverted: lower diversity = higher score)
-    // Typical WGS k-mer diversity ≈ 0.95+; RNA-Seq ≈ 0.70–0.90
     let kmer_score = smooth_ramp(1.0 - kmer_diversity, 0.05, 0.30);
 
-    // Primary signals (poly-tail and duplication) are biologically specific to
-    // RNA-Seq.  Secondary signals (cycle bias, GC skew, k-mer diversity) can
-    // arise from non-biological sources (e.g. synthetic/low-complexity data).
-    // Require at least some primary evidence before incorporating secondary
-    // signals to avoid false positives.
+    // Classic pathway: poly-tail and duplication are primary
     let primary = 0.40 * poly_score + 0.30 * dup_score;
-    if primary < 0.01 {
-        return primary;
-    }
+    let classic_score = if primary >= 0.01 {
+        let secondary_raw = 0.15 * bias_score + 0.08 * gc_score + 0.07 * kmer_score;
+        let scaling = (primary / 0.20).min(1.0);
+        primary + secondary_raw * scaling
+    } else {
+        primary
+    };
 
-    // Scale secondary signals proportionally to primary signal strength.
-    // When primary evidence is weak (e.g., only 15% duplication with no poly-tail),
-    // secondary signals (bias, GC, k-mer diversity) are attenuated because they
-    // can arise from non-RNA-seq sources (amplicon, small-genome WGS, etc.).
-    let secondary_raw = 0.15 * bias_score + 0.08 * gc_score + 0.07 * kmer_score;
-    let scaling = (primary / 0.20).min(1.0);
-    primary + secondary_raw * scaling
+    // Bias-dominant pathway: strong leading-cycle bias with corroboration.
+    // k-mer diversity must be in the transcriptomic range [0.40, 0.65]:
+    //   >= 0.40 excludes amplicon/target-enriched data (kmer ≈ 0.10–0.30)
+    //   <  0.65 excludes large-genome WGS (kmer ≈ 0.70+)
+    let bias_dominant_score =
+        if leading_cycle_bias > 0.08 && gc_content_bias > 0.04
+           && kmer_diversity >= 0.40 && kmer_diversity < 0.65
+        {
+            0.30 * bias_score + 0.25 * gc_score + 0.25 * kmer_score
+                + 0.10 * dup_score + 0.10 * poly_score
+        } else {
+            0.0
+        };
+
+    classic_score.max(bias_dominant_score)
 }
 
 /// Smooth ramp function: returns 0.0 when x <= lo, 1.0 when x >= hi,
@@ -707,7 +710,7 @@ fn suffix_complexity_ok(sequence: &str) -> bool {
     unique.len() >= 3
 }
 
-fn has_homopolymer_tail(sequence: &[u8], base: u8) -> bool {
+pub fn has_homopolymer_tail(sequence: &[u8], base: u8) -> bool {
     let tail = &sequence[sequence.len().saturating_sub(20)..];
     let mut run = 0usize;
     for nucleotide in tail {

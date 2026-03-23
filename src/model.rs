@@ -158,6 +158,7 @@ pub struct AutoProfile {
     pub quality_profile: QualityProfile,
     pub adapter_candidates: Vec<AdapterCandidate>,
     pub barcode_hint: Option<BarcodeHint>,
+    pub poly_tail_rate: f64,
     pub notes: Vec<String>,
 }
 

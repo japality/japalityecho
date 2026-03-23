@@ -59,6 +59,17 @@ fn synthetic_dna_from_index(mut value: usize, len: usize) -> String {
     String::from_utf8(sequence).expect("synthetic DNA is ASCII")
 }
 
+/// Pseudo-random DNA with uniform base composition (mimics real genomic reads).
+fn random_dna(len: usize, seed: u64) -> Vec<u8> {
+    let mut state = seed;
+    (0..len)
+        .map(|_| {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            b"ACGT"[((state >> 33) as usize) % 4]
+        })
+        .collect()
+}
+
 fn illumina_style_qualities(len: usize) -> Vec<u8> {
     let mut qualities = vec![b'I'; len];
     for quality in qualities.iter_mut().skip(len.saturating_sub(10)) {
@@ -92,7 +103,7 @@ fn does_not_call_atac_from_trace_nextera_signal() {
     let nextera = b"CTGTCTCTTATACACATCT";
     let records: Vec<FastqRecord> = (0..2000)
         .map(|index| {
-            let mut sequence = synthetic_dna_from_index(index + 100, 76).into_bytes();
+            let mut sequence = random_dna(76, (index + 100) as u64);
             if index == 0 {
                 let start = sequence.len() - nextera.len();
                 sequence[start..].copy_from_slice(nextera);
@@ -114,7 +125,7 @@ fn detects_atac_from_strong_nextera_signal() {
     let nextera = b"CTGTCTCTTATACACATCT";
     let records: Vec<FastqRecord> = (0..256)
         .map(|index| {
-            let mut sequence = synthetic_dna_from_index(index + 4000, 76).into_bytes();
+            let mut sequence = random_dna(76, (index + 4000) as u64);
             if index < 24 {
                 let start = sequence.len() - nextera.len();
                 sequence[start..].copy_from_slice(nextera);
@@ -3287,10 +3298,11 @@ fn write_study_artifact_fixture(base: &Path) -> Result<std::path::PathBuf> {
 
     let mut wgs_fastq = String::new();
     for index in 0..8 {
-        let wgs_read = synthetic_dna_from_index(index + 1200, core.len());
+        let wgs_read = random_dna(core.len(), (index + 1200) as u64);
+        let wgs_read_str = String::from_utf8(wgs_read).unwrap();
         wgs_fastq.push_str(&format!(
-            "@wgs-{index}\n{wgs_read}\n+\n{}\n",
-            "I".repeat(wgs_read.len())
+            "@wgs-{index}\n{wgs_read_str}\n+\n{}\n",
+            "I".repeat(wgs_read_str.len())
         ));
     }
     fs::write(&wgs, wgs_fastq)?;
@@ -3329,10 +3341,11 @@ fn write_study_inventory_fixture(base: &Path) -> Result<std::path::PathBuf> {
 
     let mut wgs_fastq = String::new();
     for index in 0..8 {
-        let wgs_read = synthetic_dna_from_index(index + 2200, core.len());
+        let wgs_read = random_dna(core.len(), (index + 2200) as u64);
+        let wgs_read_str = String::from_utf8(wgs_read).unwrap();
         wgs_fastq.push_str(&format!(
-            "@wgs-{index}\n{wgs_read}\n+\n{}\n",
-            "I".repeat(wgs_read.len())
+            "@wgs-{index}\n{wgs_read_str}\n+\n{}\n",
+            "I".repeat(wgs_read_str.len())
         ));
     }
     fs::write(&wgs, wgs_fastq)?;
