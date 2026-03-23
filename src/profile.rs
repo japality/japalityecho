@@ -11,8 +11,8 @@ const KNOWN_ADAPTERS: &[(&str, &str)] = &[
     ("nextera-transposase", "CTGTCTCTTATACACATCT"),
 ];
 
-const ATAC_NEXTERA_SCORE_MIN: f64 = 0.01;
-const ILLUMINA_ADAPTER_SCORE_MIN: f64 = 0.001;
+const ATAC_NEXTERA_SCORE_MIN: f64 = 0.002;
+const ILLUMINA_ADAPTER_SCORE_MIN: f64 = 0.0005;
 
 /// Minimum combined RNA-Seq evidence score (out of 1.0) to classify as RNA-Seq.
 /// Each signal contributes a weighted partial score; a composite ≥ this threshold
@@ -273,8 +273,14 @@ fn detect_platform(
         } else {
             Platform::PacBio
         }
+    } else if mean_read_length > 200.0 && mean_phred < 15.0 {
+        // Very low quality + moderate length strongly suggests ONT
+        Platform::Ont
     } else if mean_read_length >= 35.0 {
-        if tail_drop >= 6.0 || illumina_adapter_signal >= ILLUMINA_ADAPTER_SCORE_MIN {
+        let length_cv = length_stddev / mean_read_length;
+        if length_cv > 0.3 && mean_phred < 28.0 && illumina_adapter_signal < ILLUMINA_ADAPTER_SCORE_MIN {
+            Platform::IonTorrent
+        } else if tail_drop >= 6.0 || illumina_adapter_signal >= ILLUMINA_ADAPTER_SCORE_MIN {
             Platform::Illumina
         } else if tail_drop <= 3.5 && mean_phred >= 28.0 {
             Platform::Mgi
@@ -306,7 +312,11 @@ fn detect_experiment(
         } else {
             ExperimentType::SingleCell10xV2
         }
-    } else if nextera_signal >= ATAC_NEXTERA_SCORE_MIN && mean_read_length < 120.0 {
+    } else if nextera_signal >= ATAC_NEXTERA_SCORE_MIN
+        && mean_read_length < 120.0
+        && nextera_signal
+            > 7.0 * strongest_adapter_score(adapters, "illumina")
+    {
         ExperimentType::AtacSeq
     } else if rna_seq_evidence_score(
         poly_tail_rate,
@@ -367,8 +377,13 @@ fn rna_seq_evidence_score(
         return primary;
     }
 
-    let secondary = 0.15 * bias_score + 0.08 * gc_score + 0.07 * kmer_score;
-    primary + secondary
+    // Scale secondary signals proportionally to primary signal strength.
+    // When primary evidence is weak (e.g., only 15% duplication with no poly-tail),
+    // secondary signals (bias, GC, k-mer diversity) are attenuated because they
+    // can arise from non-RNA-seq sources (amplicon, small-genome WGS, etc.).
+    let secondary_raw = 0.15 * bias_score + 0.08 * gc_score + 0.07 * kmer_score;
+    let scaling = (primary / 0.20).min(1.0);
+    primary + secondary_raw * scaling
 }
 
 /// Smooth ramp function: returns 0.0 when x <= lo, 1.0 when x >= hi,
@@ -399,8 +414,8 @@ fn detect_barcode_hint(records: &[FastqRecord], median_read_length: usize) -> Op
     }
 
     let rate = poly_t_hits as f64 / records.len() as f64;
-    // Require strong poly-T signal: ≥40% for standard reads, ≥15% for very short reads.
-    let minimum_rate = if median_read_length <= 40 { 0.15 } else { 0.40 };
+    // Require strong poly-T signal: ≥20% for standard reads, ≥8% for very short reads.
+    let minimum_rate = if median_read_length <= 40 { 0.08 } else { 0.20 };
     if rate < minimum_rate {
         return None;
     }

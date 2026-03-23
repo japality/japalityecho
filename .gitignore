@@ -1,1 +1,10 @@
 /target
+japalityecho_app/
+*.apk
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.synctex.gz
+paper/japalityecho_biorxiv_submission.tar.gz
+your_output.*
+"$workdir"

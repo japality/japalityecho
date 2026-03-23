@@ -9,6 +9,7 @@ pub enum Platform {
     Mgi,
     Ont,
     PacBio,
+    IonTorrent,
     Unknown,
 }
 
@@ -19,6 +20,7 @@ impl Platform {
             Self::Mgi => "MGI/DNBSEQ",
             Self::Ont => "Oxford Nanopore",
             Self::PacBio => "PacBio",
+            Self::IonTorrent => "Ion Torrent",
             Self::Unknown => "Unknown",
         }
     }
@@ -40,6 +42,7 @@ impl FromStr for Platform {
             "mgi" | "dnbseq" | "mgidnbseq" => Ok(Self::Mgi),
             "ont" | "nanopore" | "oxfordnanopore" => Ok(Self::Ont),
             "pacbio" => Ok(Self::PacBio),
+            "iontorrent" | "ion_torrent" | "torrent" => Ok(Self::IonTorrent),
             "unknown" | "" => Ok(Self::Unknown),
             _ => Err(format!("unsupported platform '{value}'")),
         }
