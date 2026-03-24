@@ -1,7 +1,9 @@
 [package]
 name = "japalityecho"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2024"
+license = "GPL-3.0-only"
+repository = "https://github.com/japality/japalityecho"
 description = "JapalityECHO: zero-config, context-aware NGS preprocessing with heterogeneous backend abstractions"
 
 [dependencies]

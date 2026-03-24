@@ -42,6 +42,7 @@ japalityecho input.fastq.gz -o output.fastq.gz --platform illumina --experiment 
 ```
 src/
 ├── main.rs          # CLI entry point
+├── lib.rs           # Library root and public API
 ├── profile.rs       # Stage 1: auto-detection (platform, experiment, adapters)
 ├── spectrum.rs      # Stage 2: k-mer spectrum construction
 ├── process.rs       # Stage 3: correction, trimming, output
@@ -53,7 +54,10 @@ src/
 ├── backend.rs       # Heterogeneous compute dispatch
 ├── fastq.rs         # FASTQ I/O with pinned memory
 ├── model.rs         # Data structures
-└── evaluate.rs      # Quality metrics
+├── evaluate.rs      # Quality metrics
+├── history.rs       # Processing history and logging
+├── paper.rs         # Benchmark reproduction utilities
+└── study.rs         # Study-level metadata handling
 
 kernels/
 ├── cuda/            # CUDA kernel for GPU-accelerated trimming/correction
