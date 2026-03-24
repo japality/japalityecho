@@ -1,10 +1,32 @@
+# Build artifacts
 /target
+Cargo.lock
+
+# Android app
 japalityecho_app/
 *.apk
+
+# LaTeX intermediates
 paper/*.aux
 paper/*.log
 paper/*.out
 paper/*.synctex.gz
+paper/*.bbl
+paper/*.blg
+paper/*.fls
+paper/*.fdb_latexmk
 paper/japalityecho_biorxiv_submission.tar.gz
+
+# Scripts & generated (keep locally, not in repo)
+paper/compare_*.py
+paper/generate_*.py
+paper/run_*.py
+paper/generated/
+paper/japalityecho_biorxiv.*
+paper/*_ja.md
+paper/*_zh.md
+run_benchmark.sh
+
+# Data & temp
 your_output.*
 "$workdir"
