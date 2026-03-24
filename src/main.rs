@@ -88,6 +88,8 @@ enum Command {
         adapter: Option<String>,
         #[arg(long)]
         min_quality: Option<u8>,
+        #[arg(long)]
+        kmer_size: Option<usize>,
         #[arg(long, default_value_t = 3)]
         rounds: usize,
         #[arg(long, value_enum, default_value_t = BenchmarkSessionModeArg::ColdStart)]
@@ -113,6 +115,8 @@ enum Command {
         adapter: Option<String>,
         #[arg(long)]
         min_quality: Option<u8>,
+        #[arg(long)]
+        kmer_size: Option<usize>,
         #[arg(long, default_value_t = 3)]
         rounds: usize,
         #[arg(long)]
@@ -448,6 +452,7 @@ fn main() -> Result<()> {
             backend,
             adapter,
             min_quality,
+            kmer_size,
             rounds,
             session_mode,
             label,
@@ -461,7 +466,7 @@ fn main() -> Result<()> {
                     backend_preference: backend.into(),
                     forced_adapter: adapter.clone(),
                     min_quality_override: min_quality,
-                    kmer_size_override: None,
+                    kmer_size_override: kmer_size,
                     forced_platform: None,
                     forced_experiment: None,
                 },
@@ -494,6 +499,7 @@ fn main() -> Result<()> {
             backend,
             adapter,
             min_quality,
+            kmer_size,
             rounds,
             label,
             history,
@@ -506,7 +512,7 @@ fn main() -> Result<()> {
                     backend_preference: backend.into(),
                     forced_adapter: adapter.clone(),
                     min_quality_override: min_quality,
-                    kmer_size_override: None,
+                    kmer_size_override: kmer_size,
                     forced_platform: None,
                     forced_experiment: None,
                 },
